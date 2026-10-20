@@ -1,0 +1,65 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            triplet: windows-x64
+            binary: antora-source-resolver.exe
+          - os: ubuntu-latest
+            triplet: linux-x64
+            binary: antora-source-resolver
+          - os: macos-14
+            triplet: macos-arm64
+            binary: antora-source-resolver
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup D
+        uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-latest
+      - name: Build
+        run: dub build -b release
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp bin/antora-source-resolver.exe dist/antora-source-resolver.exe
+            powershell -Command "Compress-Archive -Path dist/antora-source-resolver.exe -DestinationPath dist/antora-source-resolver-${{ matrix.triplet }}.zip -Force"
+          else
+            cp bin/antora-source-resolver dist/antora-source-resolver 2>/dev/null || cp antora-source-resolver dist/antora-source-resolver
+            tar -czf dist/antora-source-resolver-${{ matrix.triplet }}.tar.gz -C dist antora-source-resolver
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: antora-source-resolver-${{ matrix.triplet }}
+          path: dist/antora-source-resolver-${{ matrix.triplet }}.*
+          if-no-files-found: error
+          retention-days: 5
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

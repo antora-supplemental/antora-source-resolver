@@ -2,14 +2,24 @@
 
 Optional **D** CLI accelerator for `@antora-supplemental/antora-local-content-sources`. Same marker algorithm and JSON request/response contract as the Node resolver.
 
+== Releases
+
+Tagged builds publish to https://github.com/antora-supplemental/antora-source-resolver/releases[GitHub Releases] as:
+
+* `antora-source-resolver-windows-x64.zip`
+* `antora-source-resolver-linux-x64.tar.gz`
+* `antora-source-resolver-macos-arm64.tar.gz`
+
+The Antora extension can download these automatically (`dAutoDownload`).
+
 == Build
 
 [source,shell]
 ----
-dub build
+dub build -b release
 ----
 
-Binary: `bin/antora-source-resolver` (or on PATH after `dub run`).
+Binary: `antora-source-resolver` (`.exe` on Windows).
 
 == Usage
 
@@ -18,8 +28,10 @@ Binary: `bin/antora-source-resolver` (or on PATH after `dub run`).
 antora-source-resolver resolve request.json response.json
 ----
 
-Request fields: `sources`, `searchRoots`, `cachePath`, `maxDepth`.
+Request fields: `sources`, `searchRoots`, `startDir`, `cachePath`, `maxDepth`, `maxUpwardHops`, `searchOtherDrives`, `overrides` (map of URL or marker basename → path).
 
-Response fields: `resolved`, `cache`, `report`.
+Response fields: `resolved`, `cache`, `report` (each row includes `matches`, `conflict`, `overrideUsed`).
+
+When multiple clones match, paths are printed on **stderr** and the first ordered hit is used unless `overrides` pins a path.
 
 When the binary is absent, the Antora extension falls back to pure Node.

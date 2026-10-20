@@ -5,10 +5,6 @@
   "copyright": "Copyright © 2026, Ryan Johnson",
   "license": "MIT",
   "targetType": "executable",
-  "targetPath": "bin/antora-source-resolver",
-  "configurations": {
-    "application": {
-      "mainSourceFile": "source/app.d"
-    }
-  }
+  "targetPath": "bin",
+  "mainSourceFile": "source/app.d"
 }

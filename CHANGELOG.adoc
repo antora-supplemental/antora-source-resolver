@@ -1,0 +1,10 @@
+= Changelog
+
+== [0.1.0] - 2026-10-20
+
+=== Added
+
+* `resolve` subcommand: JSON request/response matching `@antora-supplemental/antora-local-content-sources`.
+* Upward-then-drive marker search with parallel drive scans (`std.parallelism`).
+* Duplicate-clone warnings on stderr; `matches`, `conflict`, and `overrideUsed` in report JSON.
+* GitHub Actions CI and release matrix (windows-x64, linux-x64, macos-arm64).
