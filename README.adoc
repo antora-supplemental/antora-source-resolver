@@ -28,7 +28,11 @@ Binary: `antora-source-resolver` (`.exe` on Windows).
 antora-source-resolver resolve request.json response.json
 ----
 
-Request fields: `sources`, `searchRoots`, `startDir`, `cachePath`, `maxDepth`, `maxUpwardHops`, `searchOtherDrives`, `overrides` (map of URL or marker basename → path).
+Request fields: `sources`, `searchRoots`, `startDir`, `cachePath`, `maxDepth`, `maxUpwardHops`, `searchOtherDrives`, `searchMethod` (`auto` = MFT on Windows, walk elsewhere), `overrides` (map of URL or marker basename → path).
+
+== Windows MFT search
+
+On NTFS, drive-wide discovery reads the Master File Table for exact marker basenames (`.antora-src-*`, `.antora-source-id`) instead of walking directories. Indexes are cached per drive for the duration of one `resolve` invocation. Opening `\\.\X:` may require administrator privileges; if MFT open fails, the resolver falls back to directory walk for that drive.
 
 Response fields: `resolved`, `cache`, `report` (each row includes `matches`, `conflict`, `overrideUsed`).
 

@@ -1,5 +1,12 @@
 = Changelog
 
+== [0.1.1] - 2026-10-20
+
+=== Added
+
+* Windows NTFS MFT filename scan (`source/mft_search.d`) with per-drive index cache for one `resolve` run.
+* Request field `searchMethod` (`auto` | `mft` | `walk`); report methods `mft-search` / `mft-first-match`.
+
 == [0.1.0] - 2026-10-20
 
 === Added

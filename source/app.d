@@ -20,6 +20,11 @@ import std.regex;
 import std.stdio;
 import std.string;
 
+version (Windows) {
+import mft_search;
+MftVolume[string] g_mftVolumeCache;
+}
+
 enum MARKER_NAMESPACE = "antora-supplemental:local-content-sources:v1";
 enum MARKER_LEGACY = ".antora-source-id";
 enum DEFAULT_MAX_UPWARD_HOPS = 16;
@@ -147,7 +152,57 @@ string[] searchDriveRoot(string driveRoot, string markerBasename, int maxDepth) 
     return uniqueRoots(hits);
 }
 
-string[] collectMarkerCloneRoots(string startDir, string markerBasename, int maxDepth, int maxUpwardHops, string[] extraRoots, bool searchOtherDrives) {
+bool useMftSearch(string searchMethod) {
+    version (Windows) {
+        if (searchMethod == "walk") return false;
+        return true;
+    }
+    return false;
+}
+
+string[] searchDriveMft(string driveRoot, string markerBasename) {
+    version (Windows) {
+        if (driveRoot.length < 2) return null;
+        auto key = driveRoot[0 .. 2].toUpper;
+        if (key !in g_mftVolumeCache) {
+            MftVolume vol;
+            if (!openVolume(vol, driveRoot)) return null;
+            g_mftVolumeCache[key] = vol;
+        }
+        string[] names = [markerBasename];
+        if (markerBasename != MARKER_LEGACY) names ~= MARKER_LEGACY;
+        auto files = findExactFilePathsInVolume(g_mftVolumeCache[key], names);
+        if (files is null) return null;
+        string[] roots;
+        bool[string] seen;
+        foreach (f; files) {
+            auto root = absolutePath(dirName(f));
+            if (root in seen) continue;
+            seen[root] = true;
+            roots ~= root;
+        }
+        return roots;
+    }
+    return null;
+}
+
+string[] drivesToScan(string startDir, bool searchOtherDrives) {
+    string[] drives;
+    auto home = driveRootForPath(startDir);
+    if (home.length) drives ~= home;
+    if (searchOtherDrives) {
+        foreach (d; listOtherDriveRoots(startDir)) {
+            bool dup;
+            foreach (h; drives) {
+                if (absolutePath(h) == absolutePath(d)) dup = true;
+            }
+            if (!dup) drives ~= d;
+        }
+    }
+    return drives;
+}
+
+string[] collectMarkerCloneRoots(string startDir, string markerBasename, int maxDepth, int maxUpwardHops, string[] extraRoots, bool searchOtherDrives, string searchMethod) {
     string[] ordered;
     bool[string] seen;
     void push(string[] roots) {
@@ -165,8 +220,16 @@ string[] collectMarkerCloneRoots(string startDir, string markerBasename, int max
         walkCollectMarkerFiles(absolutePath(root), markerBasename, maxDepth, null, hits);
         push(uniqueRoots(hits));
     }
-    if (searchOtherDrives) {
-        auto drives = listOtherDriveRoots(startDir);
+    auto drives = drivesToScan(startDir, searchOtherDrives);
+    if (useMftSearch(searchMethod)) {
+        version (Windows) {
+            foreach (d; parallel(drives)) {
+                auto mftRoots = searchDriveMft(d, markerBasename);
+                if (mftRoots !is null) push(mftRoots);
+                else push(searchDriveRoot(d, markerBasename, maxDepth));
+            }
+        }
+    } else {
         foreach (d; parallel(drives)) {
             push(searchDriveRoot(d, markerBasename, maxDepth));
         }
@@ -219,6 +282,12 @@ Choice chooseLocalRoot(string[] matches, string overridePath, string markerBasen
 }
 
 void main(string[] args) {
+    version (Windows) {
+        scope (exit) {
+            foreach (ref v; g_mftVolumeCache.byValue) closeVolume(v);
+            g_mftVolumeCache = null;
+        }
+    }
     if (args.length < 4 || args[1] != "resolve") {
         stderr.writeln("usage: antora-source-resolver resolve <request.json> <response.json>");
         return;
@@ -231,6 +300,7 @@ void main(string[] args) {
     int maxDepth = ("maxDepth" in req) ? cast(int) req["maxDepth"].integer : 10;
     int maxUpwardHops = ("maxUpwardHops" in req) ? cast(int) req["maxUpwardHops"].integer : DEFAULT_MAX_UPWARD_HOPS;
     bool searchOtherDrives = !("searchOtherDrives" in req) || req["searchOtherDrives"].type != JSONType.false_;
+    string searchMethod = ("searchMethod" in req) ? req["searchMethod"].str.toLower : "auto";
 
     JSONValue[string] overrides;
     if ("overrides" in req && req["overrides"].type == JSONType.object)
@@ -268,11 +338,13 @@ void main(string[] args) {
         }
 
         if (localRoot is null) {
-            matches = collectMarkerCloneRoots(startDir, marker, maxDepth, maxUpwardHops, searchRoots, searchOtherDrives);
+            matches = collectMarkerCloneRoots(startDir, marker, maxDepth, maxUpwardHops, searchRoots, searchOtherDrives, searchMethod);
             auto overridePath = pickOverride(overrides, normalized, marker);
             auto choice = chooseLocalRoot(matches, overridePath, marker, normalized);
             localRoot = choice.localRoot;
             method = choice.method;
+            if (method == "marker-search" && useMftSearch(searchMethod)) method = "mft-search";
+            else if (method == "first-match" && useMftSearch(searchMethod)) method = "mft-first-match";
             overrideUsed = choice.overrideUsed;
         }
 
