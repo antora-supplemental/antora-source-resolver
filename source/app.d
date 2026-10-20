@@ -350,6 +350,9 @@ void main(string[] args) {
     string[string] byRemote;
     JSONValue[] report;
 
+    stderr.writeln("antora-source-resolver: scanning for .antora-source-id markers (NTFS MFT on Windows when enabled) — this can take several minutes.");
+    stderr.flush();
+
     foreach (src; sources.array) {
         auto url = src["url"].str;
         if (!url.startsWith("http") && !url.startsWith("git@")) continue;
