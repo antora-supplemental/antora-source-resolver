@@ -1,5 +1,11 @@
 = Changelog
 
+== [0.1.2] - 2026-10-20
+
+=== Changed
+
+* Marker discovery uses fixed `.antora-source-id` only; match after reading `id:` / `url:` in file body (same as Node v0.2.2).
+
 == [0.1.1] - 2026-10-20
 
 === Added

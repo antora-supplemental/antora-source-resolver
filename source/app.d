@@ -16,6 +16,7 @@ import std.json;
 import std.parallelism;
 import std.path;
 import std.process;
+import std.range;
 import std.regex;
 import std.stdio;
 import std.string;
@@ -41,14 +42,38 @@ string normalizeGitRemoteUrl(string url) {
     return url.toLower;
 }
 
-string markerBasenameForRemote(string remoteUrl) {
+string markerIdForRemote(string remoteUrl) {
     auto key = normalizeGitRemoteUrl(remoteUrl);
     ubyte[] buf;
     buf ~= cast(ubyte[]) MARKER_NAMESPACE;
     buf ~= cast(ubyte) 0;
     buf ~= cast(ubyte[]) key;
     auto digest = sha256Of(buf);
-    return format!".antora-src-%(%02x%)"(digest[0 .. 16]);
+    return format!"%(%02x%)"(digest[0 .. 16]);
+}
+
+struct ParsedMarker {
+    string id;
+    string url;
+}
+
+ParsedMarker parseMarkerFile(string text) {
+    ParsedMarker pm;
+    foreach (raw; text.replace("\r", "").split("\n")) {
+        auto line = raw.strip;
+        if (!line.length || line == MARKER_NAMESPACE) continue;
+        if (auto m = matchFirst(line, r"^id:\s*([0-9a-f]{32})\s*$")) {
+            pm.id = m[1].toLower;
+            continue;
+        }
+        if (auto m = matchFirst(line, r"^url:\s*(.+)\s*$")) {
+            pm.url = normalizeGitRemoteUrl(m[1]);
+            continue;
+        }
+        if (!pm.url.length && (line.startsWith("http") || line.startsWith("git@")))
+            pm.url = normalizeGitRemoteUrl(line);
+    }
+    return pm;
 }
 
 bool isGitCheckout(string dir) {
@@ -64,19 +89,18 @@ bool shouldSkipDir(string name) {
         || name == ".cursor" || name == "Cache" || name == "Caches";
 }
 
-void walkCollectMarkerFiles(string dir, string markerBasename, int depth, string excludeSubdir, ref string[] outPaths) {
+void walkCollectMarkerFiles(string dir, int depth, string excludeSubdir, ref string[] outPaths) {
     if (depth < 0) return;
     if (!exists(dir)) return;
     foreach (entry; dirEntries(dir, SpanMode.shallow)) {
         auto full = buildPath(dir, entry.name);
         if (!entry.isDir) {
-            if (entry.name == markerBasename || entry.name == MARKER_LEGACY)
-                outPaths ~= full;
+            if (entry.name == MARKER_LEGACY) outPaths ~= full;
             continue;
         }
         if (shouldSkipDir(entry.name)) continue;
         if (excludeSubdir.length && absolutePath(full) == absolutePath(excludeSubdir)) continue;
-        walkCollectMarkerFiles(full, markerBasename, depth - 1, null, outPaths);
+        walkCollectMarkerFiles(full, depth - 1, null, outPaths);
     }
 }
 
@@ -92,19 +116,19 @@ string[] uniqueRoots(string[] markerPaths) {
     return roots;
 }
 
-string[] searchUpwardFrom(string startDir, string markerBasename, int maxDepth, int maxUpwardHops) {
+string[] searchUpwardFrom(string startDir, int maxDepth, int maxUpwardHops) {
     string[] ordered;
     bool[string] seen;
     string dir = absolutePath(startDir);
     string excludeChild;
     for (int hop = 0; hop <= maxUpwardHops; hop++) {
         string[] hits;
-        walkCollectMarkerFiles(dir, markerBasename, maxDepth, excludeChild, hits);
+        walkCollectMarkerFiles(dir, maxDepth, excludeChild, hits);
         foreach (h; hits) {
-            auto root = absolutePath(dirName(h));
-            if (root in seen) continue;
-            seen[root] = true;
-            ordered ~= root;
+            auto key = absolutePath(h);
+            if (key in seen) continue;
+            seen[key] = true;
+            ordered ~= h;
         }
         if (hop == maxUpwardHops) break;
         excludeChild = dir;
@@ -146,10 +170,10 @@ string[] listOtherDriveRoots(string startDir) {
     return roots;
 }
 
-string[] searchDriveRoot(string driveRoot, string markerBasename, int maxDepth) {
+string[] searchDriveRoot(string driveRoot, int maxDepth) {
     string[] hits;
-    walkCollectMarkerFiles(driveRoot, markerBasename, maxDepth, null, hits);
-    return uniqueRoots(hits);
+    walkCollectMarkerFiles(driveRoot, maxDepth, null, hits);
+    return hits;
 }
 
 bool useMftSearch(string searchMethod) {
@@ -160,7 +184,7 @@ bool useMftSearch(string searchMethod) {
     return false;
 }
 
-string[] searchDriveMft(string driveRoot, string markerBasename) {
+string[] searchDriveMft(string driveRoot) {
     version (Windows) {
         if (driveRoot.length < 2) return null;
         auto key = driveRoot[0 .. 2].toUpper;
@@ -169,19 +193,7 @@ string[] searchDriveMft(string driveRoot, string markerBasename) {
             if (!openVolume(vol, driveRoot)) return null;
             g_mftVolumeCache[key] = vol;
         }
-        string[] names = [markerBasename];
-        if (markerBasename != MARKER_LEGACY) names ~= MARKER_LEGACY;
-        auto files = findExactFilePathsInVolume(g_mftVolumeCache[key], names);
-        if (files is null) return null;
-        string[] roots;
-        bool[string] seen;
-        foreach (f; files) {
-            auto root = absolutePath(dirName(f));
-            if (root in seen) continue;
-            seen[root] = true;
-            roots ~= root;
-        }
-        return roots;
+        return findExactFilePathsInVolume(g_mftVolumeCache[key], [MARKER_LEGACY]);
     }
     return null;
 }
@@ -202,63 +214,84 @@ string[] drivesToScan(string startDir, bool searchOtherDrives) {
     return drives;
 }
 
-string[] collectMarkerCloneRoots(string startDir, string markerBasename, int maxDepth, int maxUpwardHops, string[] extraRoots, bool searchOtherDrives, string searchMethod) {
+string[] filterCloneRoots(string[] markerFiles, string normalizedRemote, string markerId) {
     string[] ordered;
     bool[string] seen;
-    void push(string[] roots) {
-        foreach (r; roots) {
-            auto key = absolutePath(r);
+    foreach (fp; markerFiles) {
+        auto root = absolutePath(dirName(fp));
+        if (root in seen) continue;
+        if (!markerContentMatchesRemote(root, normalizedRemote, markerId)) continue;
+        seen[root] = true;
+        ordered ~= root;
+    }
+    return ordered;
+}
+
+string[] collectMarkerCloneRoots(string startDir, string normalizedRemote, string markerId, int maxDepth, int maxUpwardHops, string[] extraRoots, bool searchOtherDrives, string searchMethod) {
+    string[] filePaths;
+    bool[string] seen;
+    void pushPaths(string[] paths) {
+        foreach (fp; paths) {
+            auto key = absolutePath(fp);
             if (key in seen) continue;
             seen[key] = true;
-            ordered ~= r;
+            filePaths ~= fp;
         }
     }
-    push(searchUpwardFrom(startDir, markerBasename, maxDepth, maxUpwardHops));
+    pushPaths(searchUpwardFrom(startDir, maxDepth, maxUpwardHops));
     foreach (root; extraRoots) {
         if (!root.length || !exists(root)) continue;
         string[] hits;
-        walkCollectMarkerFiles(absolutePath(root), markerBasename, maxDepth, null, hits);
-        push(uniqueRoots(hits));
+        walkCollectMarkerFiles(absolutePath(root), maxDepth, null, hits);
+        pushPaths(hits);
     }
     auto drives = drivesToScan(startDir, searchOtherDrives);
     if (useMftSearch(searchMethod)) {
         version (Windows) {
             foreach (d; parallel(drives)) {
-                auto mftRoots = searchDriveMft(d, markerBasename);
-                if (mftRoots !is null) push(mftRoots);
-                else push(searchDriveRoot(d, markerBasename, maxDepth));
+                auto mftFiles = searchDriveMft(d);
+                if (mftFiles !is null) pushPaths(mftFiles);
+                else pushPaths(searchDriveRoot(d, maxDepth));
             }
         }
     } else {
         foreach (d; parallel(drives)) {
-            push(searchDriveRoot(d, markerBasename, maxDepth));
+            pushPaths(searchDriveRoot(d, maxDepth));
         }
     }
-    return ordered;
+    return filterCloneRoots(filePaths, normalizedRemote, markerId);
 }
 
-bool markerContentMatches(string repoRoot, string normalizedRemote) {
-    auto legacy = buildPath(repoRoot, MARKER_LEGACY);
-    if (!exists(legacy)) return false;
-    try {
-        auto text = readText(legacy).strip;
-        auto nl = text.indexOf("\n");
-        if (nl < 0) nl = text.indexOf("\r");
-        auto body = nl >= 0 ? text[0 .. nl].strip : text;
-        return normalizeGitRemoteUrl(body) == normalizedRemote;
-    } catch (Exception e) {
-        return false;
+bool markerContentMatchesRemote(string repoRoot, string normalizedRemote, string markerId) {
+    auto primary = buildPath(repoRoot, MARKER_LEGACY);
+    if (exists(primary)) {
+        try {
+            auto pm = parseMarkerFile(readText(primary));
+            if (pm.url == normalizedRemote) return true;
+            if (pm.id.length && pm.id == markerId) return true;
+        } catch (Exception e) { }
     }
+    auto depPath = buildPath(repoRoot, format!".antora-src-%s"(markerId));
+    if (exists(depPath)) {
+        try {
+            auto pm = parseMarkerFile(readText(depPath));
+            if (pm.url == normalizedRemote) return true;
+        } catch (Exception e) {
+            return true;
+        }
+    }
+    return false;
 }
 
-bool rootHasMarker(string root, string markerBasename, string normalizedRemote) {
-    if (exists(buildPath(root, markerBasename))) return true;
-    return markerContentMatches(root, normalizedRemote);
+bool rootHasMarker(string root, string markerId, string normalizedRemote) {
+    return markerContentMatchesRemote(root, normalizedRemote, markerId) && isGitCheckout(root);
 }
 
-string pickOverride(JSONValue[string] overrides, string normalizedRemote, string markerBasename) {
+string pickOverride(JSONValue[string] overrides, string normalizedRemote, string markerId) {
     if (normalizedRemote in overrides) return overrides[normalizedRemote].str;
-    if (markerBasename in overrides) return overrides[markerBasename].str;
+    if (markerId in overrides) return overrides[markerId].str;
+    auto dep = format!".antora-src-%s"(markerId);
+    if (dep in overrides) return overrides[dep].str;
     return null;
 }
 
@@ -268,10 +301,10 @@ struct Choice {
     bool overrideUsed;
 }
 
-Choice chooseLocalRoot(string[] matches, string overridePath, string markerBasename, string normalizedRemote) {
+Choice chooseLocalRoot(string[] matches, string overridePath, string markerId, string normalizedRemote) {
     if (overridePath.length) {
         auto resolved = absolutePath(overridePath);
-        if (rootHasMarker(resolved, markerBasename, normalizedRemote) && isGitCheckout(resolved)) {
+        if (rootHasMarker(resolved, markerId, normalizedRemote)) {
             bool inList = matches.any!(m => absolutePath(m) == resolved);
             return Choice(resolved, inList ? "override" : "override-forced", true);
         }
@@ -322,25 +355,25 @@ void main(string[] args) {
         if (!url.startsWith("http") && !url.startsWith("git@")) continue;
         auto normalized = normalizeGitRemoteUrl(url);
         if (normalized in byRemote) continue;
-        auto marker = markerBasenameForRemote(url);
+        auto markerId = markerIdForRemote(url);
 
         string[] matches;
         string localRoot;
         string method = "none";
         bool overrideUsed;
 
-        if (marker in cacheEntries && "path" in cacheEntries[marker]) {
-            localRoot = cacheEntries[marker]["path"].str;
-            if (localRoot.length && isGitCheckout(localRoot) && rootHasMarker(localRoot, marker, normalized)) {
+        if (markerId in cacheEntries && "path" in cacheEntries[markerId]) {
+            localRoot = cacheEntries[markerId]["path"].str;
+            if (localRoot.length && rootHasMarker(localRoot, markerId, normalized)) {
                 method = "cache";
                 matches = [localRoot];
             } else localRoot = null;
         }
 
         if (localRoot is null) {
-            matches = collectMarkerCloneRoots(startDir, marker, maxDepth, maxUpwardHops, searchRoots, searchOtherDrives, searchMethod);
-            auto overridePath = pickOverride(overrides, normalized, marker);
-            auto choice = chooseLocalRoot(matches, overridePath, marker, normalized);
+            matches = collectMarkerCloneRoots(startDir, normalized, markerId, maxDepth, maxUpwardHops, searchRoots, searchOtherDrives, searchMethod);
+            auto overridePath = pickOverride(overrides, normalized, markerId);
+            auto choice = chooseLocalRoot(matches, overridePath, markerId, normalized);
             localRoot = choice.localRoot;
             method = choice.method;
             if (method == "marker-search" && useMftSearch(searchMethod)) method = "mft-search";
@@ -350,7 +383,7 @@ void main(string[] args) {
 
         bool conflict = matches.length > 1 && !overrideUsed;
         if (conflict) {
-            stderr.writeln(format!"multiple local clones for %s (%s):"(normalized, marker));
+            stderr.writeln(format!"multiple local clones for %s (id %s):"(normalized, markerId));
             foreach (m; matches) stderr.writeln(format!"  - %s"(m));
             stderr.writeln(format!"using %s (%s). Pin one path in .antora-local-sources.yml"(localRoot, method));
         }
@@ -360,7 +393,7 @@ void main(string[] args) {
 
         if (localRoot !is null) {
             byRemote[normalized] = localRoot;
-            cacheEntries[marker] = JSONValue([
+            cacheEntries[markerId] = JSONValue([
                 "path": JSONValue(localRoot),
                 "updatedAt": JSONValue(Clock.currTime.toISOString()),
             ]);
@@ -368,7 +401,8 @@ void main(string[] args) {
 
         report ~= JSONValue([
             "remote": JSONValue(normalized),
-            "marker": JSONValue(marker),
+            "markerId": JSONValue(markerId),
+            "markerFile": JSONValue(MARKER_LEGACY),
             "localRoot": JSONValue(localRoot is null ? JSONValue(null) : JSONValue(localRoot)),
             "method": JSONValue(method),
             "matches": JSONValue(matchJson),
@@ -393,7 +427,7 @@ void main(string[] args) {
 
     auto responseDoc = JSONValue([
         "resolved": JSONValue(resolved),
-        "cache": JSONValue(["version": JSONValue(1), "entries": JSONValue(cacheEntries)]),
+        "cache": JSONValue(["version": JSONValue(2), "entries": JSONValue(cacheEntries)]),
         "report": JSONValue(report),
     ]);
     std.file.write(args[3], cast(const(ubyte)[]) responseDoc.toPrettyString());
