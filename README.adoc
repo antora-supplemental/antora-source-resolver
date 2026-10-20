@@ -1,0 +1,25 @@
+= antora-source-resolver
+
+Optional **D** CLI accelerator for `@antora-supplemental/antora-local-content-sources`. Same marker algorithm and JSON request/response contract as the Node resolver.
+
+== Build
+
+[source,shell]
+----
+dub build
+----
+
+Binary: `bin/antora-source-resolver` (or on PATH after `dub run`).
+
+== Usage
+
+[source,shell]
+----
+antora-source-resolver resolve request.json response.json
+----
+
+Request fields: `sources`, `searchRoots`, `cachePath`, `maxDepth`.
+
+Response fields: `resolved`, `cache`, `report`.
+
+When the binary is absent, the Antora extension falls back to pure Node.

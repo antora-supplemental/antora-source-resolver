@@ -1,0 +1,14 @@
+{
+  "name": "antora-source-resolver",
+  "description": "Cross-platform CLI: find Antora content clones by stable .antora-src-* marker files (optional accelerator for antora-local-content-sources).",
+  "authors": ["Ryan Johnson"],
+  "copyright": "Copyright © 2026, Ryan Johnson",
+  "license": "MIT",
+  "targetType": "executable",
+  "targetPath": "bin/antora-source-resolver",
+  "configurations": {
+    "application": {
+      "mainSourceFile": "source/app.d"
+    }
+  }
+}
